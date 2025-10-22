@@ -1,0 +1,82 @@
+name: 'Install Excalibur'
+description: 'Installs Excalibur'
+
+inputs:
+  version:
+    description: 'Excalibur version to install'
+    required: false
+    default: main
+
+runs:
+  using: composite
+  steps:
+      - name: Fetch Sources
+        shell: bash
+        run: |
+          cd ${RUNNER_TEMP}
+          git clone https://github.com/Irockasingranite/excalibur.git excalibur --branch ${{ inputs.version }}
+
+      - name: Determine Stack Snapshot
+        id: parse-snapshot
+        shell: bash
+        run: |
+          cd ${RUNNER_TEMP}/excalibur
+          snapshot=$( sed -nE 's/^snapshot:[[:blank:]](.*)$/\1/p' stack.yaml )
+          echo "snapshot=${snapshot}" >> $GITHUB_OUTPUT
+          echo "found snapshot: ${snapshot}"
+
+      - name: Setup Stack
+        uses: haskell-actions/setup@v2.8.2
+        with:
+          enable-stack: true
+          stack-no-global: true
+
+      - name: Cache GHC
+        uses: actions/cache@v4
+        id: ghc
+        with:
+          path: ~/.stack/programs/*/ghc-*
+          key: CI-ghc-${{ steps.parse-snapshot.outputs.snapshot }}
+
+      - name: Install GHC using Stack
+        if: steps.ghc.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cd ${RUNNER_TEMP}/excalibur
+          stack setup --install-ghc
+
+      - name: Cache Pantry (Stackage package index)
+        id: pantry
+        uses: actions/cache@v4
+        with:
+          path: ~/.stack/pantry
+          key: CI-pantry-${{ steps.parse-snapshot.outputs.snapshot }}
+
+      - name: Recompute Stackage package index
+        if: steps.pantry.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cd ${RUNNER_TEMP}/excalibur
+          stack update # populates ~/.stack/pantry
+
+      - name: Cache Haskell Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.stack/stack.sqlite3
+            ~/.stack/snapshots
+          key: CI-deps-${{ steps.parse-snapshot.outputs.snapshot }}--${{ hashFiles('${RUNNER_TEMP}/excalibur/excalibur.cabal', '${RUNNER_TEMP}/excalibur/stack.yaml', '${RUNNER_TEMP}/excalibur/stack.yaml.lock') }}
+          restore-keys: |
+            CI-deps-${{ steps.parse-snapshot.outputs.snapshot }}--
+
+      - name: Cache local modules
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/excalibur/.stack-work
+          key: CI-build-${{ steps.parse-snapshot.outputs.snapshot }}
+
+      - name: Build and Install
+        shell: bash
+        run: |
+          cd ${RUNNER_TEMP}/excalibur
+          stack install
